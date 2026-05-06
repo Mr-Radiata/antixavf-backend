@@ -300,11 +300,9 @@ async def tg_verify_password(req: PasswordRequest):
         del tg_sessions[req.phone]
         raise HTTPException(status_code=400, detail="Parol noto'g'ri yoki xatolik yuz berdi.")
 
-
 # ==========================================
 # 🔴 YOUTUBE API YO'LAKLARI
 # ==========================================
-# 🛠 ASYNC def o'rniga DEF (Server qotib qolmasligi uchun)
 @app.post("/api/yt/verify-web")
 def verify_yt_web(req: WebVerifyRequest):
     token_url = "https://oauth2.googleapis.com/token"
@@ -340,17 +338,11 @@ def verify_yt_web(req: WebVerifyRequest):
             title = item["snippet"]["title"]
             title_lower = title.lower()
             
-            # 🛠 YouTube kanallarini THEFUZZ bilan qidirish (Optimallashtirilgan)
-            # Avvaliga aniq moslikni tekshiradi, bo'lmasa Fuzz ishlatadi
+            # O'xshashlik (Fuzzy) tekshiruvi olib tashlandi.
+            # Endi faqat ro'yxatdagi nom bilan yuzma-yuz (aniq) mos kelsagina taqiqlangan deb topadi.
             if title_lower in BANNED_NAMES_LOWER:
                 if title not in found_banned_channels:
                     found_banned_channels.append(title)
-            else:
-                for banned in BANNED_NAMES_LOWER:
-                    if fuzz.ratio(title_lower, banned) > 85:
-                        if title not in found_banned_channels:
-                            found_banned_channels.append(title)
-                        break # Bitta mos tushsa, qolgan ro'yxatni aylanib o'tirmaydi
                         
         next_token = yt_data.get("nextPageToken")
         if not next_token:
