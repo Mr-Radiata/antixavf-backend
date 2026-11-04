@@ -1,7 +1,9 @@
 fastapi
 uvicorn
 pyrogram
+tgcrypto
 aiohttp
 thefuzz
 pydantic
 requests
+python-dotenv

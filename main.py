@@ -1,12 +1,23 @@
 import os
+import asyncio
 import time
 import requests
+from dotenv import load_dotenv
+
+# Ensure an event loop exists for pyrogram sync imports on Python 3.10+ / 3.14+
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pyrogram import Client
 from pyrogram.enums import ChatType
-from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid
+from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PasswordHashInvalid
 from thefuzz import fuzz
 
 app = FastAPI(title="Antixavf API")
@@ -23,8 +34,8 @@ app.add_middleware(
 # ⚙️ UMUMIY SOZLAMALAR VA PAROLLAR
 # ==========================================
 # Telegram Parollari
-API_ID = 33769072 
-API_HASH = "ecb69f2f2e5511fe1b4a695448094c69" 
+API_ID = int(os.environ.get("TELEGRAM_API_ID", "33769072"))
+API_HASH = os.environ.get("TELEGRAM_API_HASH", "ecb69f2f2e5511fe1b4a695448094c69").strip() 
 
 # BARCHA TAQIQLANGAN KANALLAR
 BANNED_NAMES = [
@@ -164,22 +175,28 @@ BANNED_NAMES = [
 BANNED_NAMES_LOWER = [name.lower() for name in BANNED_NAMES]
 
 # YouTube Parollari (Render/Server Environmentdan olinadi)
-raw_id = os.environ.get("GOOGLE_CLIENT_ID", "")
+raw_id = os.environ.get("GOOGLE_CLIENT_ID", "462238723241-0q7plckonmlj0320513m3q6k1dksrvo3.apps.googleusercontent.com")
 raw_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 CLIENT_ID = raw_id.replace('"', '').replace("'", "").strip()
 CLIENT_SECRET = raw_secret.replace('"', '').replace("'", "").strip()
-REDIRECT_URI = "https://antixavf.uz"
+REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI", "https://antixavf.uz").strip()
 
 # 🛠 RAM XOTIRA TO'LISHIDAN HIMOYA 
 tg_sessions = {}
 SESSION_TIMEOUT = 600  # 10 daqiqadan so'ng eski sessiyalar o'chiriladi
 
+def normalize_phone(phone: str) -> str:
+    cleaned = phone.replace(" ", "").replace("-", "")
+    if not cleaned.startswith("+"):
+        cleaned = "+" + cleaned
+    return cleaned
+
 async def cleanup_expired_sessions():
     """Foydalanuvchi kod kiritmay chiqib ketsa, server xotirasini qutqarish"""
     current_time = time.time()
     expired_phones = [
-        phone for phone, data in tg_sessions.items() 
-        if current_time - data['timestamp'] > SESSION_TIMEOUT
+        phone for phone, data in list(tg_sessions.items()) 
+        if current_time - data.get('timestamp', 0) > SESSION_TIMEOUT
     ]
     for phone in expired_phones:
         try:
@@ -187,7 +204,8 @@ async def cleanup_expired_sessions():
             await client.disconnect()
         except Exception:
             pass
-        del tg_sessions[phone]
+        if phone in tg_sessions:
+            del tg_sessions[phone]
 
 # ==========================================
 # 📦 PYDANTIC MODELLARI
@@ -206,10 +224,20 @@ class PasswordRequest(BaseModel):
 
 class WebVerifyRequest(BaseModel):
     code: str
+    redirect_uri: str | None = None
 
 @app.get("/")
 async def root():
     return {"status": "success", "message": "Antixavf API 100% xavfsiz va maxfiy rejimda ishlamoqda!"}
+
+@app.get("/api/health")
+async def health():
+    return {
+        "status": "healthy",
+        "service": "Antixavf API",
+        "telegram_configured": bool(API_ID and API_HASH),
+        "youtube_configured": bool(CLIENT_ID and CLIENT_SECRET)
+    }
 
 # ==========================================
 # 🔵 TELEGRAM API YO'LAKLARI
@@ -218,16 +246,16 @@ async def check_channels_and_cleanup(client: Client, phone: str):
     found_channels = []
     try:
         async for dialog in client.get_dialogs():
-            # 🛠 Pyrogram yangilanishlariga qarshi mustahkam tekshiruv
-            if dialog.chat.type == ChatType.CHANNEL:
+            # Kanal va guruhlarni tekshirish
+            if dialog.chat.type in (ChatType.CHANNEL, ChatType.SUPERGROUP, ChatType.GROUP):
                 chat_title_lower = dialog.chat.title.lower() if dialog.chat.title else ""
                 chat_username_lower = dialog.chat.username.lower() if dialog.chat.username else ""
                 
                 # Banned names optimizatsiyasi (Tezlik oshirildi)
                 for banned in BANNED_NAMES_LOWER:
-                    title_match = chat_title_lower and fuzz.ratio(chat_title_lower, banned) > 90
-                    banned_clean = banned.replace("https://t.me/", "").replace("@", "")
-                    username_match = chat_username_lower and chat_username_lower == banned_clean
+                    banned_clean = banned.split('/')[0].replace("https://t.me/", "").replace("@", "").strip()
+                    username_match = chat_username_lower and (chat_username_lower == banned_clean)
+                    title_match = chat_title_lower and (chat_title_lower == banned or fuzz.ratio(chat_title_lower, banned) > 90)
 
                     if title_match or username_match:
                         channel_info = f"{dialog.chat.title}"
@@ -239,7 +267,10 @@ async def check_channels_and_cleanup(client: Client, phone: str):
         try:
             await client.log_out() 
         except Exception:
-            await client.disconnect() 
+            try:
+                await client.disconnect() 
+            except Exception:
+                pass
             
         if phone in tg_sessions:
             del tg_sessions[phone]
@@ -249,17 +280,23 @@ async def check_channels_and_cleanup(client: Client, phone: str):
 
 @app.post("/api/tg/send-code")
 async def tg_send_code(req: PhoneRequest):
-    # Har safar yangi so'rov kelganda xotirani tozalash
     await cleanup_expired_sessions()
     
-    clean_phone = req.phone.replace("+", "").replace(" ", "")
-    client = Client(name=f"temp_{clean_phone}", api_id=API_ID, api_hash=API_HASH, in_memory=True)
+    clean_phone = normalize_phone(req.phone)
+    if clean_phone in tg_sessions:
+        try:
+            await tg_sessions[clean_phone]['client'].disconnect()
+        except Exception:
+            pass
+        del tg_sessions[clean_phone]
+
+    session_name = clean_phone.replace("+", "")
+    client = Client(name=f"temp_{session_name}", api_id=API_ID, api_hash=API_HASH, in_memory=True)
     
     await client.connect()
     try:
-        sent_code = await client.send_code(req.phone)
-        # 🛠 Sessiyaga vaqt yorlig'i qo'shildi
-        tg_sessions[req.phone] = {
+        sent_code = await client.send_code(clean_phone)
+        tg_sessions[clean_phone] = {
             "client": client,
             "timestamp": time.time()
         } 
@@ -271,33 +308,42 @@ async def tg_send_code(req: PhoneRequest):
 
 @app.post("/api/tg/verify-code")
 async def tg_verify_code(req: CodeRequest):
-    if req.phone not in tg_sessions:
-        raise HTTPException(status_code=400, detail="Sessiya topilmadi. Iltimos, kodni qaytadan so'rang.")
+    clean_phone = normalize_phone(req.phone)
+    if clean_phone not in tg_sessions:
+        raise HTTPException(status_code=400, detail="Sessiya topilmadi yoki muddati tugagan. Iltimos, kodni qaytadan so'rang.")
 
-    client = tg_sessions[req.phone]['client']
+    client = tg_sessions[clean_phone]['client']
     try:
-        await client.sign_in(req.phone, req.phone_code_hash, req.code)
-        return await check_channels_and_cleanup(client, req.phone)
+        await client.sign_in(clean_phone, req.phone_code_hash, req.code.strip())
+        return await check_channels_and_cleanup(client, clean_phone)
     except SessionPasswordNeeded:
+        tg_sessions[clean_phone]['timestamp'] = time.time()
         return {"status": "password_needed"}
+    except PhoneCodeInvalid:
+        raise HTTPException(status_code=400, detail="Tasdiqlash kodi noto'g'ri kiritildi. Qaytadan tekshirib kiritib ko'ring.")
     except Exception as e:
         await client.disconnect()
-        del tg_sessions[req.phone]
+        if clean_phone in tg_sessions:
+            del tg_sessions[clean_phone]
         raise HTTPException(status_code=400, detail=f"Xatolik: {str(e)}")
 
 
 @app.post("/api/tg/verify-password")
 async def tg_verify_password(req: PasswordRequest):
-    if req.phone not in tg_sessions:
-        raise HTTPException(status_code=400, detail="Sessiya topilmadi.")
+    clean_phone = normalize_phone(req.phone)
+    if clean_phone not in tg_sessions:
+        raise HTTPException(status_code=400, detail="Sessiya topilmadi yoki muddati tugagan.")
 
-    client = tg_sessions[req.phone]['client']
+    client = tg_sessions[clean_phone]['client']
     try:
         await client.check_password(req.password)
-        return await check_channels_and_cleanup(client, req.phone)
+        return await check_channels_and_cleanup(client, clean_phone)
+    except PasswordHashInvalid:
+        raise HTTPException(status_code=400, detail="2-bosqichli parol noto'g'ri kiritildi.")
     except Exception as e:
         await client.disconnect()
-        del tg_sessions[req.phone]
+        if clean_phone in tg_sessions:
+            del tg_sessions[clean_phone]
         raise HTTPException(status_code=400, detail="Parol noto'g'ri yoki xatolik yuz berdi.")
 
 # ==========================================
@@ -305,13 +351,20 @@ async def tg_verify_password(req: PasswordRequest):
 # ==========================================
 @app.post("/api/yt/verify-web")
 def verify_yt_web(req: WebVerifyRequest):
+    if not CLIENT_SECRET:
+        raise HTTPException(
+            status_code=500,
+            detail="GOOGLE_CLIENT_SECRET serverda sozlanmagan. Iltimos, backend sozlamalarida GOOGLE_CLIENT_SECRET ni o'rnating."
+        )
+
+    redirect_uri = req.redirect_uri or REDIRECT_URI
     token_url = "https://oauth2.googleapis.com/token"
     token_data = {
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
         "code": req.code,
         "grant_type": "authorization_code",
-        "redirect_uri": REDIRECT_URI
+        "redirect_uri": redirect_uri
     }
     
     token_res = requests.post(token_url, data=token_data)
@@ -335,11 +388,10 @@ def verify_yt_web(req: WebVerifyRequest):
             
         yt_data = yt_res.json()
         for item in yt_data.get("items", []):
-            title = item["snippet"]["title"]
+            title = item.get("snippet", {}).get("title", "")
             title_lower = title.lower()
             
-            # O'xshashlik (Fuzzy) tekshiruvi olib tashlandi.
-            # Endi faqat ro'yxatdagi nom bilan yuzma-yuz (aniq) mos kelsagina taqiqlangan deb topadi.
+            # Aniq mos kelish tekshiruvi
             if title_lower in BANNED_NAMES_LOWER:
                 if title not in found_banned_channels:
                     found_banned_channels.append(title)
