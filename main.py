@@ -87,7 +87,7 @@ BANNED_NAMES = [
     "undud qissasidan ibratlar", "umdatul ahkam", "umma news_uz", "ummatka eslatma", "unutilgan sunnatlar", "usmoniylar", "ustoz abdulhadiy darslari",
     "ustoz abu saloh", "ustoz abu xolid", "ustozlarimiz", "usulul fiqh", "uygon ummat", "uzbekcha nashida", "video darsliglar", "videogram uz",
     "volidam_ilindim", "xilofat sari", "xilofat", "абу муовия", "абу салох киска", "абу салох", "абу. уккоша", "акида ал-таховия", "ал_масрук",
-    "аль-фатҳ тв", "асмоул хусна", "аҳли илмлар", "аҳли сунна устозлар", "дуо ва зикр", "даъватчилар", "ғалаба шаббодаси", "джамаат",
+    "ал-фатҳ тв", "ал-фатх тв", "аль-фатҳ тв", "асмоул хусна", "аҳли илмлар", "аҳли сунна устозлар", "дуо ва зикр", "даъватчилар", "ғалаба шаббодаси", "джамаат",
     "дорога в рай", "жаннат ошиклари", "жиходий дарслар", "зуфар медиа", "ислом йўли", "аброр мухтор алий 11", "абу салох дарсликлари",
     "ақийда_амният_фикр", "бидъат аҳлига раддия", "демократия бу ширк", "жангавар дастур", "ustoz ahluddin navqotiy", "ustoz yahyo turkistoniy",
     "yahyo turkistoniy muxlislaridan", "ислом уммати/islom ummati", "исломда уммат мажлиси", "ишиднинг хаворижлиги", "қалб тубидаги фикрлар",
@@ -146,7 +146,10 @@ BANNED_NAMES = [
     "talbisu iblis darslari", "tamkin media", "taqvo media tv", "tavhid darsi", "tavhid maktabi", 
     "the saroy mulla!", "turkiston", "ustozlar davatlari", "usulul fiqh", "uzbek uz", "uzr yoq", 
     "xolis media", "alfatx", "foida va qoidalar", "foruq uz", "ечим исломда", "ал-ваъй", 
-    "ал-фатх тв", "аль-фатҳ тв", "аль фатх тв", "sodiqlar uz", "tavhidorg sahifasi l rasmiy", 
+    "ал-фатҳ тв", "ал-фатх тв", "ал фатҳ тв", "ал фатх тв", "аль-фатҳ тв", "аль-фатх тв", "аль фатҳ тв", "аль фатх тв", 
+    "al-fatx tv", "al-fath tv", "al fatx tv", "al fath tv", "alfatx tv", "alfath tv", 
+    "shayh_abdulloh_zufar", "shayh abdulloh zufar", "@shayh_abdulloh_zufar", "shayx abdulloh zufar", "shayx_abdulloh_zufar", 
+    "sodiqlar uz", "tavhidorg sahifasi l rasmiy", 
     "yaumma", "iymonli qalblar", "muslim tv sahifasi", "al-fatx studio", "ummat sheri", 
     "taqvo media", "таухид медиа", "hidoyat islom tarixi", "nomoz va benomozga taluqli masalalar", 
     "солиха сатторова", "қуддус хақида таҳлил", "rushda huda", "muhojir podcast", 
@@ -173,6 +176,25 @@ BANNED_NAMES = [
 ]
 # Taqqoslashni tezlashtirish uchun avvaldan kichik harflarga o'tkazilgan ro'yxat
 BANNED_NAMES_LOWER = [name.lower() for name in BANNED_NAMES]
+
+def normalize_name(name: str) -> str:
+    cleaned = (
+        name.lower()
+        .replace("ҳ", "х")
+        .replace("h", "x")
+        .replace("ь", "")
+        .replace("-", " ")
+        .replace("_", " ")
+        .replace("@", "")
+    )
+    return " ".join(cleaned.split())
+
+BANNED_NAMES_NORMALIZED = {normalize_name(name) for name in BANNED_NAMES if len(normalize_name(name)) > 2}
+
+# Ma'lum taqiqlangan YouTube kanallari ID lari (nomi o'zgarsa ham aniqlash uchun)
+BANNED_CHANNEL_IDS = {
+    "UCKDZqtWJZBv6ZDKZZRg0Q9w",  # АЛ-ФАТҲ ТВ (www.youtube.com/@Shayh_Abdulloh_Zufar)
+}
 
 # YouTube Parollari (Render/Server Environmentdan olinadi)
 raw_id = os.environ.get("GOOGLE_CLIENT_ID", "462238723241-0q7plckonmlj0320513m3q6k1dksrvo3.apps.googleusercontent.com")
@@ -388,11 +410,21 @@ def verify_yt_web(req: WebVerifyRequest):
             
         yt_data = yt_res.json()
         for item in yt_data.get("items", []):
-            title = item.get("snippet", {}).get("title", "")
+            snippet = item.get("snippet", {})
+            title = snippet.get("title", "")
+            channel_id = snippet.get("resourceId", {}).get("channelId", "")
             title_lower = title.lower()
+            title_norm = normalize_name(title_lower)
             
-            # Aniq mos kelish tekshiruvi
-            if title_lower in BANNED_NAMES_LOWER:
+            # Aniq mos kelish tekshiruvi (nomi, o'xshash yozilishi yoki kanal ID si bo'yicha)
+            is_banned = (
+                title_lower in BANNED_NAMES_LOWER
+                or (channel_id and channel_id in BANNED_CHANNEL_IDS)
+                or (channel_id and channel_id.lower() in BANNED_NAMES_LOWER)
+                or (title_norm and title_norm in BANNED_NAMES_NORMALIZED)
+            )
+            
+            if is_banned:
                 if title not in found_banned_channels:
                     found_banned_channels.append(title)
                         
