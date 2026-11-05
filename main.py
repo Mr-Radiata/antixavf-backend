@@ -406,15 +406,23 @@ def verify_yt_web(req: WebVerifyRequest):
     while True:
         yt_res = requests.get(yt_url, headers=headers)
         if yt_res.status_code != 200:
-            break
+            print(f"DEBUG YT ERROR: status={yt_res.status_code}, body={yt_res.text}", flush=True)
+            try:
+                err_msg = yt_res.json().get("error", {}).get("message", yt_res.text)
+            except Exception:
+                err_msg = yt_res.text
+            raise HTTPException(status_code=400, detail=f"YouTube API xatosi ({yt_res.status_code}): {err_msg}")
             
         yt_data = yt_res.json()
-        for item in yt_data.get("items", []):
+        items = yt_data.get("items", [])
+        print(f"DEBUG YT: {len(items)} ta obuna qaytarildi.", flush=True)
+        for item in items:
             snippet = item.get("snippet", {})
             title = snippet.get("title", "")
             channel_id = snippet.get("resourceId", {}).get("channelId", "")
             title_lower = title.lower()
             title_norm = normalize_name(title_lower)
+            print(f"DEBUG YT ITEM: Title={title!r}, ChannelId={channel_id!r}", flush=True)
             
             # Aniq mos kelish tekshiruvi (nomi, o'xshash yozilishi yoki kanal ID si bo'yicha)
             is_banned = (
